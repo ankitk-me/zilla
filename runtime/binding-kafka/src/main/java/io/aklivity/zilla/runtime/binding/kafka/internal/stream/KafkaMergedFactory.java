@@ -22,6 +22,9 @@ import static io.aklivity.zilla.runtime.binding.kafka.internal.types.KafkaOffset
 import static io.aklivity.zilla.runtime.binding.kafka.internal.types.KafkaOffsetType.LIVE;
 import static io.aklivity.zilla.runtime.binding.kafka.internal.types.stream.WindowFW.Builder.DEFAULT_MINIMUM;
 import static io.aklivity.zilla.runtime.engine.budget.BudgetCreditor.NO_BUDGET_ID;
+import static io.aklivity.zilla.runtime.engine.concurrent.Signaler.NO_CANCEL_ID;
+import static java.lang.System.currentTimeMillis;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -100,6 +103,7 @@ import io.aklivity.zilla.runtime.binding.kafka.internal.types.stream.WindowFW;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.binding.BindingHandler;
 import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer;
+import io.aklivity.zilla.runtime.engine.concurrent.Signaler;
 
 public final class KafkaMergedFactory implements BindingHandler
 {
@@ -118,6 +122,9 @@ public final class KafkaMergedFactory implements BindingHandler
     private static final int ERROR_NOT_LEADER_FOR_PARTITION = 6;
     private static final int ERROR_UNKNOWN = -1;
     private static final int ERROR_INVALID_RECORD = 87;
+
+    private static final int SIGNAL_RECONNECT_FETCH = 1;
+    private static final int SIGNAL_RECONNECT_PRODUCE = 2;
 
     private static final int FLAGS_NONE = 0x00;
     private static final int FLAGS_FIN = 0x01;
@@ -176,6 +183,8 @@ public final class KafkaMergedFactory implements BindingHandler
     private final BindingHandler streamFactory;
     private final LongFunction<KafkaBindingConfig> supplyBinding;
     private final MergedBudgetCreditor creditor;
+    private final Signaler signaler;
+    private final int reconnectDelay;
 
     public KafkaMergedFactory(
         KafkaConfiguration config,
@@ -192,6 +201,8 @@ public final class KafkaMergedFactory implements BindingHandler
         this.streamFactory = context.streamFactory();
         this.supplyBinding = supplyBinding;
         this.creditor = creditor;
+        this.signaler = context.signaler();
+        this.reconnectDelay = config.cacheServerReconnect();
     }
 
     @Override
@@ -2186,10 +2197,11 @@ public final class KafkaMergedFactory implements BindingHandler
                 if (nextOffsetsById.containsKey(partitionId) && maximumOffset != HISTORICAL)
                 {
                     final long partitionOffset = nextFetchPartitionOffset(partitionId);
-                    leader.doFetchInitialBegin(traceId, partitionOffset);
+                    leader.doFetchInitialBeginAfterReconnectDelay(traceId, partitionOffset);
                 }
                 else
                 {
+                    leader.cancelReconnect();
                     fetchStreams.remove(leader);
                     if (fetchStreams.isEmpty())
                     {
@@ -2315,10 +2327,11 @@ public final class KafkaMergedFactory implements BindingHandler
 
                 if (leadersByAssignedId.containsKey(partitionId))
                 {
-                    leader.doProduceInitialBegin(traceId);
+                    leader.doProduceInitialBeginAfterReconnectDelay(traceId);
                 }
                 else
                 {
+                    leader.cancelReconnect();
                     produceStreams.remove(leader);
                 }
                 break;
@@ -3518,6 +3531,9 @@ public final class KafkaMergedFactory implements BindingHandler
         private long replyAck;
         private int replyMax;
 
+        private long reconnectAt = NO_CANCEL_ID;
+        private int reconnectAttempt;
+
         private KafkaUnmergedFetchStream(
             int partitionId,
             int leaderId,
@@ -3568,6 +3584,45 @@ public final class KafkaMergedFactory implements BindingHandler
                                      .deltaType(t -> t.set(merged.deltaType)))
                         .build()
                         .sizeof()));
+        }
+
+        private void doFetchInitialBeginAfterReconnectDelay(
+            long traceId,
+            long partitionOffset)
+        {
+            if (reconnectDelay != 0)
+            {
+                if (reconnectAt != NO_CANCEL_ID)
+                {
+                    signaler.cancel(reconnectAt);
+                }
+
+                this.reconnectAt = signaler.signalAt(
+                    currentTimeMillis() + Math.min(50 << reconnectAttempt++, SECONDS.toMillis(reconnectDelay)),
+                    SIGNAL_RECONNECT_FETCH,
+                    s -> onFetchInitialSignalReconnect(traceId, partitionOffset));
+            }
+            else
+            {
+                doFetchInitialBegin(traceId, partitionOffset);
+            }
+        }
+
+        private void onFetchInitialSignalReconnect(
+            long traceId,
+            long partitionOffset)
+        {
+            this.reconnectAt = NO_CANCEL_ID;
+            doFetchInitialBegin(traceId, partitionOffset);
+        }
+
+        private void cancelReconnect()
+        {
+            if (reconnectAt != NO_CANCEL_ID)
+            {
+                signaler.cancel(reconnectAt);
+                this.reconnectAt = NO_CANCEL_ID;
+            }
         }
 
         private void doFetchInitialFlush(
@@ -3729,6 +3784,8 @@ public final class KafkaMergedFactory implements BindingHandler
             final KafkaOffsetFW partition = kafkaBeginEx.fetch().partition();
             final long latestOffset = partition.latestOffset();
             final long stableOffset = partition.stableOffset();
+
+            this.reconnectAttempt = 0;
 
             merged.onFetchPartitionLeaderReady(traceId, partitionId, stableOffset, latestOffset);
 
@@ -3917,6 +3974,9 @@ public final class KafkaMergedFactory implements BindingHandler
         private long replyAck;
         private int replyMax;
 
+        private long reconnectAt = NO_CANCEL_ID;
+        private int reconnectAttempt;
+
         private KafkaUnmergedProduceStream(
             int partitionId,
             int leaderId,
@@ -3968,6 +4028,43 @@ public final class KafkaMergedFactory implements BindingHandler
                                 .partitionOffset(HISTORICAL.value())))
                         .build()
                         .sizeof()));
+        }
+
+        private void doProduceInitialBeginAfterReconnectDelay(
+            long traceId)
+        {
+            if (reconnectDelay != 0)
+            {
+                if (reconnectAt != NO_CANCEL_ID)
+                {
+                    signaler.cancel(reconnectAt);
+                }
+
+                this.reconnectAt = signaler.signalAt(
+                    currentTimeMillis() + Math.min(50 << reconnectAttempt++, SECONDS.toMillis(reconnectDelay)),
+                    SIGNAL_RECONNECT_PRODUCE,
+                    s -> onProduceInitialSignalReconnect(traceId));
+            }
+            else
+            {
+                doProduceInitialBegin(traceId);
+            }
+        }
+
+        private void onProduceInitialSignalReconnect(
+            long traceId)
+        {
+            this.reconnectAt = NO_CANCEL_ID;
+            doProduceInitialBegin(traceId);
+        }
+
+        private void cancelReconnect()
+        {
+            if (reconnectAt != NO_CANCEL_ID)
+            {
+                signaler.cancel(reconnectAt);
+                this.reconnectAt = NO_CANCEL_ID;
+            }
         }
 
         private void doProduceInitialData(
@@ -4192,6 +4289,8 @@ public final class KafkaMergedFactory implements BindingHandler
             state = KafkaState.openingReply(state);
 
             final long traceId = begin.traceId();
+
+            this.reconnectAttempt = 0;
 
             merged.onProducePartitionLeaderReady(traceId, partitionId);
 
