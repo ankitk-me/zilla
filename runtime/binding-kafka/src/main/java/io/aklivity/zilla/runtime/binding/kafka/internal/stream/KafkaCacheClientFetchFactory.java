@@ -858,8 +858,12 @@ public final class KafkaCacheClientFetchFactory implements BindingHandler
             final KafkaResetExFW kafkaResetEx = extension.get(kafkaResetExRO::tryWrap);
             final int error = kafkaResetEx != null ? kafkaResetEx.error() : -1;
 
-            if (reconnectDelay != 0 && !members.isEmpty() &&
-                error != ERROR_NOT_LEADER_FOR_PARTITION)
+            if (error == ERROR_NOT_LEADER_FOR_PARTITION)
+            {
+                leaderId = LEADER_UNKNOWN;
+            }
+
+            if (reconnectDelay != 0 && !members.isEmpty())
             {
                 if (reconnectAt != NO_CANCEL_ID)
                 {
@@ -873,11 +877,6 @@ public final class KafkaCacheClientFetchFactory implements BindingHandler
             }
             else
             {
-                if (error == ERROR_NOT_LEADER_FOR_PARTITION)
-                {
-                    leaderId = LEADER_UNKNOWN;
-                }
-
                 members.forEach(s -> s.doClientInitialResetIfNecessary(traceId, extension));
                 members.forEach(s -> s.doClientReplyAbortIfNecessary(traceId));
                 members.clear();
