@@ -622,6 +622,17 @@ public final class KafkaCacheClientFetchFactory implements BindingHandler
             }
         }
 
+        void onLeaderReady(
+            long traceId)
+        {
+            if (leaderId == LEADER_UNKNOWN && reconnectAt != NO_CANCEL_ID)
+            {
+                signaler.cancel(reconnectAt);
+                this.reconnectAt = NO_CANCEL_ID;
+                doClientFanoutInitialBeginIfNecessary(traceId);
+            }
+        }
+
         private void doClientFanoutInitialBeginIfNecessary(
             long traceId)
         {

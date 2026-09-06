@@ -628,6 +628,17 @@ public final class KafkaCacheClientProduceFactory implements BindingHandler
             }
         }
 
+        void onLeaderReady(
+            long traceId)
+        {
+            if (reconnectAt != NO_CANCEL_ID)
+            {
+                signaler.cancel(reconnectAt);
+                this.reconnectAt = NO_CANCEL_ID;
+                doClientFanInitialBeginIfNecessary(traceId);
+            }
+        }
+
         private void doClientFanInitialBeginIfNecessary(
             long traceId)
         {
