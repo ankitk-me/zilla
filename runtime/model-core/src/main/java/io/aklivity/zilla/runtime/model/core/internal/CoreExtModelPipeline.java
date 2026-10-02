@@ -203,6 +203,16 @@ abstract class CoreExtModelPipeline implements ModelPipeline
         int index,
         int length)
     {
+        if (target.isExpandable())
+        {
+            final int required = targetAt + length;
+            if (required > target.capacity())
+            {
+                target.checkLimit(required);
+            }
+            targetLimit = Math.max(targetLimit, target.capacity());
+        }
+
         int written = Math.min(targetLimit - targetAt, length);
         target.putBytes(targetAt, buffer, index, written);
         targetAt += written;
