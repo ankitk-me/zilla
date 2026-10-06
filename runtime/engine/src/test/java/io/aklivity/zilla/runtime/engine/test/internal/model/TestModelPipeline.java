@@ -174,6 +174,17 @@ final class TestModelPipeline implements ModelPipeline
         else if (resolved == ModelStatus.OK)
         {
             int remaining = contentLength - contentDrained;
+
+            if (dst.isExpandable())
+            {
+                final int required = dstIndex + remaining;
+                if (required > dst.capacity())
+                {
+                    dst.checkLimit(required);
+                }
+                dstLimit = Math.max(dstLimit, dst.capacity());
+            }
+
             int available = Math.min(remaining, dstLimit - dstIndex);
             dst.putBytes(dstIndex, buffer, contentDrained, available);
             contentDrained += available;
