@@ -126,6 +126,7 @@ import io.aklivity.zilla.runtime.common.agrona.buffer.DirectBufferEx;
 import io.aklivity.zilla.runtime.common.agrona.buffer.ExpandableArrayBufferEx;
 import io.aklivity.zilla.runtime.common.agrona.buffer.MutableDirectBufferEx;
 import io.aklivity.zilla.runtime.common.agrona.buffer.UnsafeBufferEx;
+import io.aklivity.zilla.runtime.common.lang.MemorySegments;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.binding.BindingHandler;
 import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer;
@@ -208,6 +209,7 @@ public final class HttpClientFactory implements HttpStreamFactory
     private static final String8FW HEADER_UPGRADE = new String8FW("upgrade");
     private static final String8FW HEADER_EVENT_TYPE = new String8FW("type");
     private static final String8FW HEADER_EVENT_ID = new String8FW("id");
+    private static final String8FW HEADER_EVENT_RETRY = new String8FW("retry");
 
     private static final String8FW PROXY_ALPN_H2 = new String8FW("h2");
     private static final String16FW METHOD_HEAD = new String16FW("HEAD");
@@ -233,11 +235,13 @@ public final class HttpClientFactory implements HttpStreamFactory
     private static final DirectBufferEx EVENT_FIELD_NAME_TYPE = new UnsafeBufferEx("event".getBytes(UTF_8));
     private static final DirectBufferEx EVENT_FIELD_NAME_ID = new UnsafeBufferEx("id".getBytes(UTF_8));
     private static final DirectBufferEx EVENT_FIELD_NAME_DATA = new UnsafeBufferEx("data".getBytes(UTF_8));
+    private static final DirectBufferEx EVENT_FIELD_NAME_RETRY = new UnsafeBufferEx("retry".getBytes(UTF_8));
 
     private static final IntPredicate EVENT_EOL_MATCHER = v -> v == EVENT_LINE_CR || v == EVENT_LINE_LF;
     private static final IntPredicate EVENT_COLON_MATCHER = v -> v == EVENT_LINE_COLON;
     private static final IntPredicate EVENT_EOF_MATCHER = EVENT_COLON_MATCHER.or(EVENT_EOL_MATCHER);
 
+    private static final int EVENT_RETRY_DIGITS_MAX = 18;
     private static final String8FW EVENT_FIELD_VALUE_NULL = new String8FW(null);
     private static final String8FW EVENT_FIELD_VALUE_EMPTY = new String8FW("");
 
@@ -293,6 +297,7 @@ public final class HttpClientFactory implements HttpStreamFactory
     private final OctetsFW eventFrameExtensionRO = new OctetsFW();
     private final String8FW.Builder eventIdRW = new String8FW.Builder().wrap(new UnsafeBufferEx(new byte[256]), 0, 256);
     private final String8FW.Builder eventTypeRW = new String8FW.Builder().wrap(new UnsafeBufferEx(new byte[256]), 0, 256);
+    private final String8FW.Builder eventRetryRW = new String8FW.Builder().wrap(new UnsafeBufferEx(new byte[256]), 0, 256);
 
     private final Map<DirectBufferEx, HttpEventFieldName> eventFieldNames;
     {
@@ -300,6 +305,7 @@ public final class HttpClientFactory implements HttpStreamFactory
         fieldNames.put(EVENT_FIELD_NAME_DATA, HttpEventFieldName.DATA);
         fieldNames.put(EVENT_FIELD_NAME_ID, HttpEventFieldName.ID);
         fieldNames.put(EVENT_FIELD_NAME_TYPE, HttpEventFieldName.TYPE);
+        fieldNames.put(EVENT_FIELD_NAME_RETRY, HttpEventFieldName.RETRY);
         eventFieldNames = Collections.unmodifiableMap(fieldNames);
     }
 
@@ -310,6 +316,8 @@ public final class HttpClientFactory implements HttpStreamFactory
     private final HttpEventDecoder decodeEventLineEndingAfterCR = this::decodeEventLineEndingAfterCR;
     private final HttpEventDecoder decodeEventLineEnded = this::decodeEventLineEnded;
     private final HttpEventDecoder decodeEventIgnoreLine = this::decodeEventIgnoreLine;
+    private final HttpEventDecoder decodeEventIgnore = this::decodeEventIgnore;
+    private final HttpEventDecoder decodeEventReject = this::decodeEventReject;
     private final HttpEventDecoder decodeEventFieldName = this::decodeEventFieldName;
     private final HttpEventDecoder decodeEventFieldColon = this::decodeEventFieldColon;
     private final HttpEventDecoder decodeEventFieldSpace = this::decodeEventFieldSpace;
@@ -880,7 +888,6 @@ public final class HttpClientFactory implements HttpStreamFactory
                 final String status = decodeHttp1StartLine(buffer, offset, endOfStartAt);
                 if (status == null)
                 {
-                    client.onDecodeHttp11HeadersError(traceId, authorization);
                     client.decoder = decodeHttp11Ignore;
                     break decode;
                 }
@@ -901,7 +908,6 @@ public final class HttpClientFactory implements HttpStreamFactory
                         .wrap(buffer, startOfLineAt, endOfLineAt - startOfLineAt);
                     if (!headerLine.reset(ascii).matches())
                     {
-                        client.onDecodeHttp11HeadersError(traceId, authorization);
                         client.decoder = decodeHttp11Ignore;
                         break decode;
                     }
@@ -1034,7 +1040,6 @@ public final class HttpClientFactory implements HttpStreamFactory
             }
             catch (NumberFormatException ex)
             {
-                client.onDecodeHttp11HeadersError(traceId, authorization);
                 client.decoder = decodeHttp11Ignore;
             }
         }
@@ -1086,7 +1091,6 @@ public final class HttpClientFactory implements HttpStreamFactory
             if (buffer.getByte(offset) != '\r' ||
                 buffer.getByte(offset + 1) != '\n')
             {
-                client.onDecodeHttp11BodyError(traceId, authorization);
                 client.decoder = decodeHttp11Ignore;
             }
             else
@@ -2993,7 +2997,7 @@ public final class HttpClientFactory implements HttpStreamFactory
             {
                 cleanupDecodeSlotIfNecessary();
 
-                if (decoder == decodeHttp11Ignore)
+                if (decoder == decodeHttp11Ignore && cleanupHandler == null)
                 {
                     cleanupNetwork(traceId, authorization);
                 }
@@ -3015,20 +3019,6 @@ public final class HttpClientFactory implements HttpStreamFactory
             }
         }
 
-        private void onDecodeHttp11HeadersError(
-            long traceId,
-            long authorization)
-        {
-            cleanupNetwork(traceId, authorization);
-        }
-
-        private void onDecodeHttp11BodyError(
-            long traceId,
-            long authorization)
-        {
-            cleanupNetwork(traceId, authorization);
-        }
-
         private void onDecodeHttp11Headers(
             long traceId,
             long authorization,
@@ -3037,7 +3027,6 @@ public final class HttpClientFactory implements HttpStreamFactory
             if (exchange == null)
             {
                 decoder = decodeHttp11Ignore;
-                cleanupNetwork(traceId, authorization);
             }
             else
             {
@@ -4818,6 +4807,7 @@ public final class HttpClientFactory implements HttpStreamFactory
         private int decodedDataFlags;
         private String8FW decodedId = EVENT_FIELD_VALUE_NULL;
         private String8FW decodedType = EVENT_FIELD_VALUE_NULL;
+        private String8FW decodedRetry = EVENT_FIELD_VALUE_NULL;
         private OctetsFW decodedData;
 
         private HttpExchange(
@@ -5699,12 +5689,14 @@ public final class HttpClientFactory implements HttpStreamFactory
             int flags,
             String8FW id,
             String8FW type,
+            String8FW retry,
             OctetsFW data)
         {
             final Flyweight dataEx =
                 id != EVENT_FIELD_VALUE_NULL ||
-                type != EVENT_FIELD_VALUE_NULL
-                    ? eventDataEx(id, type)
+                type != EVENT_FIELD_VALUE_NULL ||
+                retry != EVENT_FIELD_VALUE_NULL
+                    ? eventDataEx(id, type, retry)
                     : EMPTY_OCTETS;
 
             OctetsFW payload = data;
@@ -5721,7 +5713,8 @@ public final class HttpClientFactory implements HttpStreamFactory
 
         private Flyweight eventDataEx(
             String8FW id,
-            String8FW type)
+            String8FW type,
+            String8FW retry)
         {
             dataExRW.wrap(extBuffer, 0, extBuffer.capacity()).typeId(httpTypeId);
 
@@ -5737,6 +5730,13 @@ public final class HttpClientFactory implements HttpStreamFactory
                 final DirectBufferEx value = id.value();
 
                 dataExRW.headersItem(h -> h.name(HEADER_EVENT_ID).value(value, 0, value != null ? value.capacity() : 0));
+            }
+
+            if (retry != EVENT_FIELD_VALUE_NULL)
+            {
+                final DirectBufferEx value = retry.value();
+
+                dataExRW.headersItem(h -> h.name(HEADER_EVENT_RETRY).value(value, 0, value != null ? value.capacity() : 0));
             }
 
             return dataExRW.build();
@@ -5868,20 +5868,23 @@ public final class HttpClientFactory implements HttpStreamFactory
         {
             final String8FW id = decodedId;
             final String8FW type = decodedType;
+            final String8FW retry = decodedRetry;
             final OctetsFW data = decodedData;
 
             if (id != EVENT_FIELD_VALUE_NULL ||
                 type != EVENT_FIELD_VALUE_NULL ||
+                retry != EVENT_FIELD_VALUE_NULL ||
                 data != null)
             {
                 if (data != null)
                 {
                     final int flags = INIT & ~decodedDataFlags;
 
-                    onDecodedEventFragment(traceId, authorization, flags, id, type, data);
+                    onDecodedEventFragment(traceId, authorization, flags, id, type, retry, data);
 
                     decodedType = EVENT_FIELD_VALUE_NULL;
                     decodedId = EVENT_FIELD_VALUE_NULL;
+                    decodedRetry = EVENT_FIELD_VALUE_NULL;
                     decodedData = null;
                     decodedDataFlags = init(decodedDataFlags);
                 }
@@ -5894,6 +5897,10 @@ public final class HttpClientFactory implements HttpStreamFactory
                     if (decodedType == eventTypeRW.flyweight())
                     {
                         decodedType = new String8FW(decodedType.asString());
+                    }
+                    if (decodedRetry == eventRetryRW.flyweight())
+                    {
+                        decodedRetry = new String8FW(decodedRetry.asString());
                     }
                 }
             }
@@ -6535,6 +6542,7 @@ public final class HttpClientFactory implements HttpStreamFactory
     {
         exchange.decodedType = EVENT_FIELD_VALUE_NULL;
         exchange.decodedId = EVENT_FIELD_VALUE_NULL;
+        exchange.decodedRetry = EVENT_FIELD_VALUE_NULL;
         exchange.decodedData = null;
         exchange.decodedDataLines = 0;
         exchange.decodedDataFlags = 0;
@@ -6592,6 +6600,7 @@ public final class HttpClientFactory implements HttpStreamFactory
         {
             final String8FW id = exchange.decodedId;
             final String8FW type = exchange.decodedType;
+            final String8FW retry = exchange.decodedRetry;
             final OctetsFW data =
                 exchange.decodedData == null &&
                 exchange.decodedDataFlags != COMPLETE &&
@@ -6601,14 +6610,16 @@ public final class HttpClientFactory implements HttpStreamFactory
 
             if (id != EVENT_FIELD_VALUE_NULL ||
                 type != EVENT_FIELD_VALUE_NULL ||
+                retry != EVENT_FIELD_VALUE_NULL ||
                 data != null)
             {
                 final int flags = COMPLETE & ~exchange.decodedDataFlags;
 
-                exchange.onDecodedEventFragment(traceId, authorization, flags, id, type, data);
+                exchange.onDecodedEventFragment(traceId, authorization, flags, id, type, retry, data);
 
                 exchange.decodedType = EVENT_FIELD_VALUE_NULL;
                 exchange.decodedId = EVENT_FIELD_VALUE_NULL;
+                exchange.decodedRetry = EVENT_FIELD_VALUE_NULL;
                 exchange.decodedData = null;
                 exchange.decodedDataLines = 0;
                 exchange.decodedDataFlags = fin(exchange.decodedDataFlags);
@@ -6781,6 +6792,7 @@ public final class HttpClientFactory implements HttpStreamFactory
                 break;
             case ID:
             case TYPE:
+            case RETRY:
                 exchange.eventDecoder = decodeEventFieldValue;
                 break;
             case IGNORE:
@@ -6808,17 +6820,36 @@ public final class HttpClientFactory implements HttpStreamFactory
 
             if (limitOfField != -1)
             {
+                boolean valid = true;
+
                 switch (exchange.decodedFieldName)
                 {
                 case ID:
-                    exchange.decodedId = eventIdRW
-                        .set(buffer, progress, limitOfField - progress)
-                        .build();
+                    valid = isEventUtf8(buffer, progress, limitOfField);
+                    if (valid)
+                    {
+                        exchange.decodedId = eventIdRW
+                            .set(buffer, progress, limitOfField - progress)
+                            .build();
+                    }
                     break;
                 case TYPE:
-                    exchange.decodedType = eventTypeRW
-                        .set(buffer, progress, limitOfField - progress)
-                        .build();
+                    valid = isEventUtf8(buffer, progress, limitOfField);
+                    if (valid)
+                    {
+                        exchange.decodedType = eventTypeRW
+                            .set(buffer, progress, limitOfField - progress)
+                            .build();
+                    }
+                    break;
+                case RETRY:
+                    valid = isEventUtf8(buffer, progress, limitOfField);
+                    if (valid && isEventRetry(buffer, progress, limitOfField))
+                    {
+                        exchange.decodedRetry = eventRetryRW
+                            .set(buffer, progress, limitOfField - progress)
+                            .build();
+                    }
                     break;
                 default:
                     break;
@@ -6826,11 +6857,42 @@ public final class HttpClientFactory implements HttpStreamFactory
 
                 progress = limitOfField;
 
-                exchange.eventDecoder = decodeEventLineEnding;
+                exchange.eventDecoder = valid ? decodeEventLineEnding : decodeEventReject;
             }
         }
 
         return progress;
+    }
+
+    private int decodeEventReject(
+        HttpExchange exchange,
+        long traceId,
+        long authorization,
+        DirectBufferEx buffer,
+        int progress,
+        int limit)
+    {
+        exchange.decodedId = EVENT_FIELD_VALUE_NULL;
+        exchange.decodedType = EVENT_FIELD_VALUE_NULL;
+        exchange.decodedRetry = EVENT_FIELD_VALUE_NULL;
+        exchange.decodedData = null;
+        exchange.decodedDataLines = 0;
+
+        exchange.eventDecoder = decodeEventIgnore;
+        exchange.onResponseInvalid(traceId, authorization);
+
+        return progress;
+    }
+
+    private int decodeEventIgnore(
+        HttpExchange exchange,
+        long traceId,
+        long authorization,
+        DirectBufferEx buffer,
+        int progress,
+        int limit)
+    {
+        return limit;
     }
 
     private int decodeEventFieldDataValue(
@@ -6853,18 +6915,30 @@ public final class HttpClientFactory implements HttpStreamFactory
                 int endOfLineAt = indexOfEventEndOfLine(buffer, progress, limitMax);
                 int limitOfData = endOfLineAt != -1 ? endOfLineAt : limitMax;
 
-                exchange.decodedDataLines += Math.min(endOfLineAt, 0) + 1;
-                exchange.decodedData = eventDataRO.wrap(buffer, progress, limitOfData);
+                final int dataBytes = MemorySegments.utf8Bytes(buffer.segment(),
+                    buffer.wrapAdjustment() + progress, limitOfData - progress);
 
-                progress = limitOfData;
-
-                if (endOfLineAt == -1)
+                if (dataBytes < 0 || endOfLineAt != -1 && dataBytes != limitOfData - progress)
                 {
-                    exchange.doEncodeEventFragment(traceId, authorization);
+                    exchange.eventDecoder = decodeEventReject;
                 }
-                else
+                else if (dataBytes > 0 || endOfLineAt != -1)
                 {
-                    exchange.eventDecoder = decodeEventLineEnding;
+                    limitOfData = progress + dataBytes;
+
+                    exchange.decodedDataLines += Math.min(endOfLineAt, 0) + 1;
+                    exchange.decodedData = eventDataRO.wrap(buffer, progress, limitOfData);
+
+                    progress = limitOfData;
+
+                    if (endOfLineAt == -1)
+                    {
+                        exchange.doEncodeEventFragment(traceId, authorization);
+                    }
+                    else
+                    {
+                        exchange.eventDecoder = decodeEventLineEnding;
+                    }
                 }
             }
         }
@@ -6951,11 +7025,38 @@ public final class HttpClientFactory implements HttpStreamFactory
         return matchAll;
     }
 
+    private static boolean isEventUtf8(
+        DirectBufferEx buffer,
+        int offset,
+        int limit)
+    {
+        final int length = limit - offset;
+
+        return MemorySegments.utf8Bytes(buffer.segment(), buffer.wrapAdjustment() + offset, length) == length;
+    }
+
+    private static boolean isEventRetry(
+        DirectBufferEx buffer,
+        int offset,
+        int limit)
+    {
+        boolean digits = limit > offset && limit - offset <= EVENT_RETRY_DIGITS_MAX;
+
+        for (int index = offset; digits && index < limit; index++)
+        {
+            final byte digit = buffer.getByte(index);
+            digits = digit >= '0' && digit <= '9';
+        }
+
+        return digits;
+    }
+
     private enum HttpEventFieldName
     {
         DATA,
         ID,
         TYPE,
+        RETRY,
         IGNORE
     }
 
