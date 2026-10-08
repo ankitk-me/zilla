@@ -104,6 +104,8 @@
 - fix\(common-agrona\): honor the wrap offset in putStringWithoutLengthUtf8 [\#2678](https://github.com/aklivity/zilla/pull/2678) ([jfallows](https://github.com/jfallows))
 - fix\(model\): report decoder identity from supply time [\#2685](https://github.com/aklivity/zilla/pull/2685) ([jfallows](https://github.com/jfallows))
 - fix\(engine\): resolve embedding ids when processing a namespace [\#2695](https://github.com/aklivity/zilla/pull/2695) ([jfallows](https://github.com/jfallows))
+- fix\(binding-kafka\): refresh metadata for every topic after a leader change [\#2702](https://github.com/aklivity/zilla/pull/2702) ([jfallows](https://github.com/jfallows))
+- feat\(embedding-openai\): add OpenAI-compatible embedding provider [\#2705](https://github.com/aklivity/zilla/pull/2705) ([jfallows](https://github.com/jfallows))
 
 ## [2.4.7](https://github.com/aklivity/zilla/tree/2.4.7) (2026-09-30)
 
