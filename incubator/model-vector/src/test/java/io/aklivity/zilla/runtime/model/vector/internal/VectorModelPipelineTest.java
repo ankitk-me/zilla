@@ -32,6 +32,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import io.aklivity.zilla.config.model.vector.VectorModelConfig;
+import io.aklivity.zilla.runtime.common.agrona.buffer.ExpandableArrayBufferEx;
 import io.aklivity.zilla.runtime.common.agrona.buffer.UnsafeBufferEx;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.concurrent.Signaler;
@@ -105,6 +106,30 @@ public class VectorModelPipelineTest
         // THEN
         assertThat(resolved.status(), equalTo(ModelStatus.COMPLETE));
         assertThat(pipeline.identity(), equalTo(true));
+    }
+
+    @Test
+    public void shouldGrowExpandableDestinationRatherThanOverflow()
+    {
+        // GIVEN
+        int[] resumed = new int[1];
+        VectorModelPipeline pipeline = new VectorModelPipeline(handler, () -> resumed[0]++);
+        byte[] bytes = "a completely unrelated message that outgrows its destination"
+            .getBytes(StandardCharsets.UTF_8);
+        UnsafeBufferEx src = new UnsafeBufferEx(bytes);
+        ExpandableArrayBufferEx dst = new ExpandableArrayBufferEx(8);
+
+        // WHEN
+        pipeline.transform(0L, 0L, 0L, FIN, src, 0, src.capacity(), dst, 0, dst.capacity());
+        drain();
+        ModelPipelineResult resolved = pipeline.transform(
+            0L, 0L, 0L, NONE, src, 0, 0, dst, 0, dst.capacity());
+
+        // THEN
+        assertThat(resolved.status(), equalTo(ModelStatus.COMPLETE));
+        assertThat(resolved.produced(), equalTo(bytes.length));
+        assertThat(dst.getStringWithoutLengthUtf8(0, resolved.produced()),
+            equalTo("a completely unrelated message that outgrows its destination"));
     }
 
     @Test

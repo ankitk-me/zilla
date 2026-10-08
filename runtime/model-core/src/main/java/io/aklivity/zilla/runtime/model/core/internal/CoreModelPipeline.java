@@ -62,6 +62,17 @@ final class CoreModelPipeline implements ModelPipeline
         int dstLimit)
     {
         int srcLength = srcLimit - srcIndex;
+
+        if (dst.isExpandable())
+        {
+            final int required = dstIndex + srcLength;
+            if (required > dst.capacity())
+            {
+                dst.checkLimit(required);
+            }
+            dstLimit = Math.max(dstLimit, dst.capacity());
+        }
+
         int dstLength = dstLimit - dstIndex;
         int available = Math.min(srcLength, dstLength);
         // only the tail of the final fragment closes the value; a bounded dst defers FIN to a later call
