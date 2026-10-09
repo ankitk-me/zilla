@@ -271,9 +271,11 @@ public class ProtobufModelDecoderPipelineTest
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.READ);
 
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         pipeline.reset();
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
     }
 
     @Test
@@ -283,6 +285,34 @@ public class ProtobufModelDecoderPipelineTest
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>()), ModelCache.READ);
 
         assertTrue(pipeline.identity());
+    }
+
+    @Test
+    public void shouldDeriveDeterminismFromFieldTransformWired()
+    {
+        ProtobufModelHandlerImpl handler = newHandler(null);
+
+        assertTrue(handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>()), ModelCache.NONE).deterministic());
+        assertFalse(handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>(), false), ModelCache.NONE)
+            .deterministic());
+    }
+
+    @Test
+    public void shouldNotReportDeterminismWhenExtensionInstalled()
+    {
+        ProtobufModelHandlerImpl handler = newHandler(null, List.of(failing()));
+        ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.READ);
+
+        assertFalse(pipeline.deterministic());
+    }
+
+    @Test
+    public void shouldReportDeterminismWhenJsonView()
+    {
+        ProtobufModelHandlerImpl handler = newHandler("json");
+        ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
+
+        assertTrue(pipeline.deterministic());
     }
 
     @Test
@@ -522,6 +552,12 @@ public class ProtobufModelDecoderPipelineTest
     private static final class Failing implements ProtobufTransform
     {
         @Override
+        public boolean deterministic()
+        {
+            return true;
+        }
+
+        @Override
         public ProtobufPipeline.Status transform(
             ProtobufController control,
             ProtobufSource source,
@@ -628,8 +664,21 @@ public class ProtobufModelDecoderPipelineTest
     private static ModelTransform observer(
         Map<String, String> extracted)
     {
+        return observer(extracted, true);
+    }
+
+    private static ModelTransform observer(
+        Map<String, String> extracted,
+        boolean deterministic)
+    {
         return new ModelTransform()
         {
+            @Override
+            public boolean deterministic()
+            {
+                return deterministic;
+            }
+
             @Override
             public ModelStatus transform(
                 ModelController control,

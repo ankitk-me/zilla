@@ -247,33 +247,54 @@ public class JsonModelDecoderPipelineTest
     }
 
     @Test
-    public void shouldReportIdentityBeforeAndAfterFirstValue()
+    public void shouldReportIdentityAndDeterministicBeforeAndAfterFirstValue()
     {
         JsonModelHandlerImpl handler = newHandler();
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
 
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         transformValue(pipeline);
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         pipeline.reset();
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
     }
 
     @Test
-    public void shouldNotReportIdentityWhenFieldTransformWired()
+    public void shouldDeriveDeterminismFromDeterministicFieldTransformWired()
     {
         JsonModelHandlerImpl handler = newHandler();
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>()), ModelCache.NONE);
 
         assertFalse(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         transformValue(pipeline);
         assertFalse(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         pipeline.reset();
         assertFalse(pipeline.identity());
+        assertTrue(pipeline.deterministic());
+    }
+
+    @Test
+    public void shouldNotReportDeterminismWhenNondeterministicFieldTransformWired()
+    {
+        JsonModelHandlerImpl handler = newHandler();
+        ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>(), false), ModelCache.NONE);
+
+        assertFalse(pipeline.deterministic());
+
+        transformValue(pipeline);
+        assertFalse(pipeline.deterministic());
+
+        pipeline.reset();
+        assertFalse(pipeline.deterministic());
     }
 
     @Test
@@ -284,21 +305,25 @@ public class JsonModelDecoderPipelineTest
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
 
         assertFalse(pipeline.identity());
+        assertTrue(pipeline.deterministic());
     }
 
     @Test
-    public void shouldNotReportIdentityWhenExtensionInstalled()
+    public void shouldNotReportIdentityNorDeterminismWhenExtensionInstalled()
     {
         JsonModelHandlerImpl handler = newHandler(OBJECT_SCHEMA, List.of(dropping("status")));
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
 
         assertFalse(pipeline.identity());
+        assertFalse(pipeline.deterministic());
 
         transformValue(pipeline);
         assertFalse(pipeline.identity());
+        assertFalse(pipeline.deterministic());
 
         pipeline.reset();
         assertFalse(pipeline.identity());
+        assertFalse(pipeline.deterministic());
     }
 
     @Test
@@ -451,6 +476,12 @@ public class JsonModelDecoderPipelineTest
     private static final class Failing implements JsonTransform
     {
         @Override
+        public boolean deterministic()
+        {
+            return true;
+        }
+
+        @Override
         public Status transform(
             JsonController control,
             JsonSource source,
@@ -573,8 +604,21 @@ public class JsonModelDecoderPipelineTest
     private static ModelTransform observer(
         Map<String, String> extracted)
     {
+        return observer(extracted, true);
+    }
+
+    private static ModelTransform observer(
+        Map<String, String> extracted,
+        boolean deterministic)
+    {
         return new ModelTransform()
         {
+            @Override
+            public boolean deterministic()
+            {
+                return deterministic;
+            }
+
             @Override
             public ModelStatus transform(
                 ModelController control,
@@ -634,6 +678,12 @@ public class JsonModelDecoderPipelineTest
             String dropKey)
         {
             this.dropKey = dropKey;
+        }
+
+        @Override
+        public boolean deterministic()
+        {
+            return true;
         }
 
         @Override
