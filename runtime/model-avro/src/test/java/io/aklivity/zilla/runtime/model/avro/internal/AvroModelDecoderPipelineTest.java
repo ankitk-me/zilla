@@ -250,18 +250,31 @@ public class AvroModelDecoderPipelineTest
     }
 
     @Test
-    public void shouldReportIdentityBeforeAndAfterFirstValueWhenNoView()
+    public void shouldReportIdentityAndDeterministicBeforeAndAfterFirstValueWhenNoView()
     {
         AvroModelHandlerImpl handler = newHandler(SCHEMA, null);
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
 
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         transformValue(pipeline);
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         pipeline.reset();
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
+    }
+
+    @Test
+    public void shouldNotReportIdentityNorDeterminismWhenExtensionInstalled()
+    {
+        AvroModelHandlerImpl handler = newHandler(SCHEMA, null, List.of(expandingExt(64)));
+        ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
+
+        assertFalse(pipeline.identity());
+        assertFalse(pipeline.deterministic());
     }
 
     @Test
@@ -271,6 +284,7 @@ public class AvroModelDecoderPipelineTest
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, ModelTransform.NONE, ModelCache.NONE);
 
         assertFalse(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         transformValue(pipeline);
         assertFalse(pipeline.identity());
@@ -286,9 +300,11 @@ public class AvroModelDecoderPipelineTest
         ModelPipeline pipeline = handler.supplyDecoder(ModelEnvelope.NONE, observer(new HashMap<>()), ModelCache.NONE);
 
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
 
         transformValue(pipeline);
         assertTrue(pipeline.identity());
+        assertTrue(pipeline.deterministic());
     }
 
     @Test
@@ -316,6 +332,7 @@ public class AvroModelDecoderPipelineTest
 
         pipeline.reset();
         assertFalse(pipeline.identity());
+        assertFalse(pipeline.deterministic());
     }
 
     @Test
@@ -505,6 +522,12 @@ public class AvroModelDecoderPipelineTest
         {
             throw new AvroException("extension failure");
         }
+
+        @Override
+        public boolean deterministic()
+        {
+            return true;
+        }
     }
 
     private AvroModelHandlerImpl newHandler()
@@ -607,6 +630,12 @@ public class AvroModelDecoderPipelineTest
     {
         return new ModelTransform()
         {
+            @Override
+            public boolean deterministic()
+            {
+                return true;
+            }
+
             @Override
             public ModelStatus transform(
                 ModelController control,

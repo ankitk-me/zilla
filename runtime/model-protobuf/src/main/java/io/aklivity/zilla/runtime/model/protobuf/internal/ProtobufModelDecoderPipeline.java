@@ -51,6 +51,7 @@ final class ProtobufModelDecoderPipeline implements ModelPipeline
     private final ProtobufEnvelope envelope;
     private final ModelPipelineResult result;
     private final ModelCache cache;
+    private final boolean deterministic;
     private final boolean identity;
 
     private ProtobufPipeline active;
@@ -73,6 +74,7 @@ final class ProtobufModelDecoderPipeline implements ModelPipeline
         this.pipelines = new HashMap<>();
         this.result = new ModelPipelineResult();
         this.cache = cache;
+        this.deterministic = transform.deterministic() && handler.decodeDeterministic(cache);
         this.identity = handler.decodeIdentity(cache) && (extractor == null || extractor.identity());
     }
 
@@ -179,6 +181,12 @@ final class ProtobufModelDecoderPipeline implements ModelPipeline
     public boolean identity()
     {
         return identity;
+    }
+
+    @Override
+    public boolean deterministic()
+    {
+        return deterministic;
     }
 
     @Override

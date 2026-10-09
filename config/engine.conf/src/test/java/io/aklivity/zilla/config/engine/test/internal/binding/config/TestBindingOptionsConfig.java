@@ -26,6 +26,7 @@ import io.aklivity.zilla.config.engine.OptionsConfig;
 public final class TestBindingOptionsConfig extends OptionsConfig
 {
     public final ModelConfig value;
+    public final List<ModelConfig> values;
     public final String mode;
     public final String schema;
     public final TestAuthorizationConfig authorization;
@@ -40,6 +41,7 @@ public final class TestBindingOptionsConfig extends OptionsConfig
     public final String classifier;
     public final List<EnvelopeValue> envelope;
     public final List<EnvelopeAssertion> envelopeAssertions;
+    public final PipelineAssertion pipelineAssertion;
     public final String originType;
 
     public static TestBindingOptionsConfigBuilder<TestBindingOptionsConfig> builder()
@@ -55,6 +57,7 @@ public final class TestBindingOptionsConfig extends OptionsConfig
 
     TestBindingOptionsConfig(
         ModelConfig value,
+        List<ModelConfig> values,
         String mode,
         String schema,
         TestAuthorizationConfig authorization,
@@ -69,11 +72,13 @@ public final class TestBindingOptionsConfig extends OptionsConfig
         String classifier,
         List<EnvelopeValue> envelope,
         List<EnvelopeAssertion> envelopeAssertions,
+        PipelineAssertion pipelineAssertion,
         String originType,
         List<Config.Reference> refs)
     {
         super(null, refs);
         this.value = value;
+        this.values = values;
         this.mode = mode;
         this.schema = schema;
         this.authorization = authorization;
@@ -88,6 +93,7 @@ public final class TestBindingOptionsConfig extends OptionsConfig
         this.classifier = classifier;
         this.envelope = envelope;
         this.envelopeAssertions = envelopeAssertions;
+        this.pipelineAssertion = pipelineAssertion;
         this.originType = originType;
     }
 
@@ -260,6 +266,36 @@ public final class TestBindingOptionsConfig extends OptionsConfig
             this.name = name;
             this.value = value;
             this.hasValue = hasValue;
+        }
+    }
+
+    // Asserts the identity() and deterministic() declared by the encode and decode value pipelines when
+    // each is supplied, before any data is transformed; an unset expectation is not asserted.
+    public static final class PipelineAssertion
+    {
+        public final PipelineExpectation encode;
+        public final PipelineExpectation decode;
+
+        public PipelineAssertion(
+            PipelineExpectation encode,
+            PipelineExpectation decode)
+        {
+            this.encode = encode;
+            this.decode = decode;
+        }
+    }
+
+    public static final class PipelineExpectation
+    {
+        public final Boolean identity;
+        public final Boolean deterministic;
+
+        public PipelineExpectation(
+            Boolean identity,
+            Boolean deterministic)
+        {
+            this.identity = identity;
+            this.deterministic = deterministic;
         }
     }
 }

@@ -154,6 +154,12 @@ final class ClassifyModelPipeline implements ModelPipeline
     }
 
     @Override
+    public boolean deterministic()
+    {
+        return false;
+    }
+
+    @Override
     public void reset()
     {
         length = 0;
